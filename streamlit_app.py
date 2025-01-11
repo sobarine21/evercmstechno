@@ -1,148 +1,60 @@
 import streamlit as st
+import google.generativeai as genai
 import requests
-from googleapiclient.discovery import build
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from bs4 import BeautifulSoup
-from io import StringIO
-from langdetect import detect
-from pdfminer.high_level import extract_text
-from PIL import Image
 
-# Set up the Google API keys and Custom Search Engine ID
-API_KEY = st.secrets["GOOGLE_API_KEY"]  # Your Google API key from Streamlit secrets
-CX = st.secrets["GOOGLE_SEARCH_ENGINE_ID"]  # Your Google Custom Search Engine ID
+# Configure the API keys securely using Streamlit's secrets
+# Ensure to add the following keys in secrets.toml or Streamlit Cloud Secrets:
+# - GOOGLE_API_KEY: API key for Google Generative AI
+# - GOOGLE_SEARCH_ENGINE_ID: Google Custom Search Engine ID
+genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# Streamlit UI for text input and file upload
-st.title("Advanced Copyright Content Detection Tool")
-st.write("Detect if your copyrighted content is being used elsewhere on the web.")
+# App Title and Description
+st.title("AI-Powered Ghostwriter")
+st.write("Generate high-quality content and check for originality using the power of Generative AI and Google Search.")
 
-# Option for user to choose content type: text, image, or file
-content_type = st.selectbox("Select Content Type", ["Text", "Image", "File"])
+# Prompt Input Field
+prompt = st.text_area("Enter your prompt:", placeholder="Write a blog about AI trends in 2025.")
 
-# Handle Text Input
-if content_type == "Text":
-    user_content = st.text_area("Paste your copyrighted content:", height=200)
+# Search Web Functionality
+def search_web(query):
+    """Searches the web using Google Custom Search API and returns results."""
+    search_url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": st.secrets["GOOGLE_API_KEY"],
+        "cx": st.secrets["GOOGLE_SEARCH_ENGINE_ID"],
+        "q": query,
+    }
+    response = requests.get(search_url, params=params)
+    if response.status_code == 200:
+        return response.json().get("items", [])
+    else:
+        st.error(f"Search API Error: {response.status_code} - {response.text}")
+        return []
 
-    # Language detection for multilingual content
-    if user_content:
-        lang = detect(user_content)
-        st.write(f"Detected language: {lang}")
+# Generate Content Button
+if st.button("Generate Response"):
+    if not prompt.strip():
+        st.error("Please enter a valid prompt.")
+    else:
+        try:
+            # Generate content using Generative AI
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            
+            generated_text = response.text.strip()
+            
+            # Display the generated content
+            st.subheader("Generated Content:")
+            st.write(generated_text)
 
-    if st.button("Search the Web for Copyright Violations"):
-        if not user_content.strip():
-            st.error("Please provide your copyrighted content.")
-        else:
-            try:
-                # Initialize Google Custom Search API
-                service = build("customsearch", "v1", developerKey=API_KEY)
-
-                # Perform the search query
-                response = service.cse().list(q=user_content, cx=CX).execute()
-
-                # Extract URLs from the search results
-                search_results = response.get('items', [])
-                detected_matches = []
-
-                for result in search_results:
-                    url = result['link']
-                    st.write(f"Analyzing {url}...")
-
-                    # Fetch the content from the URL
-                    content_response = requests.get(url, timeout=10)
-                    if content_response.status_code == 200:
-                        web_content = content_response.text
-
-                        # Clean and parse the HTML content
-                        soup = BeautifulSoup(web_content, "html.parser")
-                        paragraphs = soup.find_all("p")
-                        web_text = " ".join([para.get_text() for para in paragraphs])
-
-                        # Calculate similarity between user content and web content
-                        vectorizer = TfidfVectorizer().fit_transform([user_content, web_text])
-                        similarity = cosine_similarity(vectorizer[0:1], vectorizer[1:2])
-
-                        # If similarity exceeds a threshold, record the match
-                        if similarity[0][0] > 0.8:  # Adjust the threshold as needed
-                            detected_matches.append((url, similarity[0][0]))
-
-                # Display results
-                if detected_matches:
-                    st.success("Potential copyright violations detected!")
-                    for match in detected_matches:
-                        st.write(f"- **URL**: {match[0]} - **Similarity**: {match[1]:.2f}")
-                else:
-                    st.info("No matches found.")
-
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# Handle Image Upload (without OCR functionality)
-elif content_type == "Image":
-    uploaded_image = st.file_uploader("Upload an image to analyze:", type=["jpg", "jpeg", "png"])
-
-    if uploaded_image is not None:
-        image = Image.open(uploaded_image)
-        st.image(image, caption="Uploaded Image", use_container_width=True)
-
-# Handle File Upload (PDF, DOCX, etc.)
-elif content_type == "File":
-    uploaded_file = st.file_uploader("Upload a text document to analyze:", type=["txt", "pdf", "docx"])
-
-    if uploaded_file is not None:
-        file_content = ""
-        if uploaded_file.type == "text/plain":
-            file_content = StringIO(uploaded_file.getvalue().decode("utf-8")).read()
-        elif uploaded_file.type == "application/pdf":
-            file_content = extract_text(uploaded_file)
-        # Add support for DOCX here if needed
-
-        st.write("Content from uploaded file:")
-        st.write(file_content)
-
-        # Option to perform search after uploading
-        if st.button("Search the Web for Copyright Violations"):
-            if not file_content.strip():
-                st.error("The uploaded file has no content.")
+            # Check if the content exists on the web
+            st.subheader("Searching for Similar Content Online:")
+            search_results = search_web(generated_text)
+            if search_results:
+                st.warning("Similar content found on the web:")
+                for result in search_results[:5]:  # Show top 5 results
+                    st.write(f"- [{result['title']}]({result['link']})")
             else:
-                try:
-                    # Proceed with the same web search logic as above for files
-                    service = build("customsearch", "v1", developerKey=API_KEY)
-                    response = service.cse().list(q=file_content, cx=CX).execute()
-
-                    # Extract URLs from the search results
-                    search_results = response.get('items', [])
-                    detected_matches = []
-
-                    for result in search_results:
-                        url = result['link']
-                        st.write(f"Analyzing {url}...")
-
-                        # Fetch the content from the URL
-                        content_response = requests.get(url, timeout=10)
-                        if content_response.status_code == 200:
-                            web_content = content_response.text
-
-                            # Clean and parse the HTML content
-                            soup = BeautifulSoup(web_content, "html.parser")
-                            paragraphs = soup.find_all("p")
-                            web_text = " ".join([para.get_text() for para in paragraphs])
-
-                            # Calculate similarity between user content and web content
-                            vectorizer = TfidfVectorizer().fit_transform([file_content, web_text])
-                            similarity = cosine_similarity(vectorizer[0:1], vectorizer[1:2])
-
-                            # If similarity exceeds a threshold, record the match
-                            if similarity[0][0] > 0.8:  # Adjust the threshold as needed
-                                detected_matches.append((url, similarity[0][0]))
-
-                    # Display results
-                    if detected_matches:
-                        st.success("Potential copyright violations detected!")
-                        for match in detected_matches:
-                            st.write(f"- **URL**: {match[0]} - **Similarity**: {match[1]:.2f}")
-                    else:
-                        st.info("No matches found.")
-
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                st.success("No similar content found online. Your content seems original!")
+        except Exception as e:
+            st.error(f"Error generating content: {e}")
